@@ -21,7 +21,7 @@ from correlation_package.correlation import Correlation
 
 ##########################################################
 
-torch.set_grad_enabled(False) # make sure to not compute gradients for computational performance
+#torch.set_grad_enabled(False) # make sure to not compute gradients for computational performance
 
 #torch.backends.cudnn.enabled = True # make sure to use cudnn for computational performance
 
@@ -40,8 +40,8 @@ backwarp_tenGrid = {}
 
 def backwarp(tenInput, tenFlow):
     if str(tenFlow.shape) not in backwarp_tenGrid:
-        tenHor = torch.linspace(-1.0 + (1.0 / tenFlow.shape[3]), 1.0 - (1.0 / tenFlow.shape[3]), tenFlow.shape[3]).view(1, 1, 1, -1).expand(-1, -1, tenFlow.shape[2], -1)
-        tenVer = torch.linspace(-1.0 + (1.0 / tenFlow.shape[2]), 1.0 - (1.0 / tenFlow.shape[2]), tenFlow.shape[2]).view(1, 1, -1, 1).expand(-1, -1, -1, tenFlow.shape[3])
+        tenHor = torch.linspace(-1.0 + (1.0 / tenFlow.shape[3]), 1.0 - (1.0 / tenFlow.shape[3]), tenFlow.shape[3]).view(1, 1, 1, -1).repeat(1, 1, tenFlow.shape[2], 1)
+        tenVer = torch.linspace(-1.0 + (1.0 / tenFlow.shape[2]), 1.0 - (1.0 / tenFlow.shape[2]), tenFlow.shape[2]).view(1, 1, -1, 1).repeat(1, 1, 1, tenFlow.shape[3])
 
         backwarp_tenGrid[str(tenFlow.shape)] = torch.cat([ tenHor, tenVer ], 1).cuda()
     # end
@@ -53,9 +53,9 @@ def backwarp(tenInput, tenFlow):
 
 ##########################################################
 
-class Network(torch.nn.Module):
+class LiteFlownet3(torch.nn.Module):
     def __init__(self):
-        super(Network, self).__init__()
+        super(LiteFlownet3, self).__init__()
 
         class Features(torch.nn.Module):
             def __init__(self):
@@ -313,21 +313,21 @@ class Network(torch.nn.Module):
             # eny
 
             def forward(self, tenFirst, tenSecond, tenFeaturesFirst, tenFeaturesSecond, tenFlow):
-                tenDifference = (tenFirst - backwarp(tenInput=tenSecond, tenFlow=tenFlow * self.fltBackward)).pow(2.0).sum(1, True).sqrt().detach()
+                tenDifference = (tenFirst - backwarp(tenInput=tenSecond, tenFlow=tenFlow * self.fltBackward)).square().sum([1], True).sqrt().detach()
 
                 tenFeaturesFirst = self.netFeat(tenFeaturesFirst)
 
-                mainfeat = self.netMain(torch.cat([ tenDifference, tenFlow - tenFlow.view(tenFlow.shape[0], 2, -1).mean(2, True).view(tenFlow.shape[0], 2, 1, 1), tenFeaturesFirst ], 1))
+                mainfeat = self.netMain(torch.cat([ tenDifference, tenFlow - tenFlow.mean([2, 3], True), tenFeaturesFirst ], 1))
                 tenDist = self.netDist(mainfeat)
                 
                 tenConf = None
                 if self.confNet:
                     tenConf = self.confNet(mainfeat)
 
-                tenDist = tenDist.pow(2.0).neg()
+                tenDist = tenDist.square().neg()
                 tenDist = (tenDist - tenDist.max(1, True)[0]).exp()
 
-                tenDivisor = tenDist.sum(1, True).reciprocal()
+                tenDivisor = tenDist.sum([1], True).reciprocal()
 
                 tenScaleX = self.netScaleX(tenDist * torch.nn.functional.unfold(input=tenFlow[:, 0:1, :, :], kernel_size=self.intUnfold, stride=1, padding=int((self.intUnfold - 1) / 2)).view_as(tenDist)) * tenDivisor
                 tenScaleY = self.netScaleY(tenDist * torch.nn.functional.unfold(input=tenFlow[:, 1:2, :, :], kernel_size=self.intUnfold, stride=1, padding=int((self.intUnfold - 1) / 2)).view_as(tenDist)) * tenDivisor
@@ -340,7 +340,8 @@ class Network(torch.nn.Module):
         self.netMatching = torch.nn.ModuleList([ Matching(intLevel) for intLevel in [ 3, 4, 5, 6 ] ])
         self.netSubpixel = torch.nn.ModuleList([ Subpixel(intLevel) for intLevel in [ 3, 4, 5, 6 ] ])
         self.netRegularization = torch.nn.ModuleList([ Regularization(intLevel) for intLevel in [ 3, 4, 5, 6 ] ])
-        self.load_state_dict(torch.load('network-{}.pytorch'.format(arguments_strModel)))
+        #self.load_state_dict(torch.load('network-{}.pytorch'.format(arguments_strModel)))
+        self.load_state_dict(torch.load('network-sintel.pytorch'))
     # end
 
     def forward(self, tenFirst, tenSecond):
@@ -379,16 +380,11 @@ class Network(torch.nn.Module):
     # end
 # end
 
-netNetwork = None
-
 ##########################################################
 
-def estimate(tenFirst, tenSecond):
-    global netNetwork
+def estimate(netNetwork, tenFirst, tenSecond):
+    #for single image only
 
-    if netNetwork is None:
-        netNetwork = Network().cuda().eval()
-    # end
     assert(tenFirst.shape[1] == tenSecond.shape[1])
     assert(tenFirst.shape[2] == tenSecond.shape[2])
 
@@ -426,13 +422,15 @@ if __name__ == '__main__':
     tenFirst = trans(tenFirst)
     tenSecond = trans(tenSecond)
 
-    tenOutput = estimate(tenFirst, tenSecond)
+    liteflownet3 = LiteFlownet3().cuda().eval()
+
+    tenOutput = estimate(liteflownet3, tenFirst, tenSecond)
 
     objOutput = open(arguments_strOut, 'wb')
 
     numpy.array([ 80, 73, 69, 72 ], numpy.uint8).tofile(objOutput)
     numpy.array([ tenOutput.shape[2], tenOutput.shape[1] ], numpy.int32).tofile(objOutput)
-    numpy.array(tenOutput.numpy().transpose(1, 2, 0), numpy.float32).tofile(objOutput)
+    numpy.array(tenOutput.detach().numpy().transpose(1, 2, 0), numpy.float32).tofile(objOutput)
 
     objOutput.close()
 # end
