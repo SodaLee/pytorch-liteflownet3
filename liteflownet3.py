@@ -4,6 +4,7 @@ import torch
 import cv2
 import numpy as np
 import torchvision.transforms as transforms
+import flowiz as fz
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -394,6 +395,9 @@ def estimate(netNetwork, tenFirst, tenSecond):
     tenPreprocessedFirst = tenFirst.cuda().view(1, 3, intHeight, intWidth)
     tenPreprocessedSecond = tenSecond.cuda().view(1, 3, intHeight, intWidth)
 
+    F1 = tenPreprocessedFirst
+    F2 = tenPreprocessedSecond
+
     intPreprocessedWidth = int(math.floor(math.ceil(intWidth / 32.0) * 32.0))
     intPreprocessedHeight = int(math.floor(math.ceil(intHeight / 32.0) * 32.0))
 
@@ -404,10 +408,17 @@ def estimate(netNetwork, tenFirst, tenSecond):
     tenFlow[:, 0, :, :] *= float(intWidth) / float(intPreprocessedWidth)
     tenFlow[:, 1, :, :] *= float(intHeight) / float(intPreprocessedHeight)
 
+    conf = (norm(F1 - backwarp(F2, tenFlow))).float()
+    print(conf.sum())
+    conf = (norm(F2 - backwarp(F1, tenFlow))).float()
+    print(conf.sum())
+
     return tenFlow[0, :, :, :].cpu()
 # end
 
 ##########################################################
+def norm(t):
+    return torch.sum(t*t, dim=1, keepdim=True)
 
 if __name__ == '__main__':
     #tenFirst = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(arguments_strFirst))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
@@ -417,7 +428,7 @@ if __name__ == '__main__':
     tenFirst = PIL.Image.open(arguments_strFirst).convert('RGB')
     tenSecond = PIL.Image.open(arguments_strSecond).convert('RGB')
     trans = [transforms.ToTensor()]
-    trans += [transforms.Normalize((0.5, 0.5, 0.5),(0.5, 0.5, 0.5))]
+    #trans += [transforms.Normalize((0.5, 0.5, 0.5),(0.5, 0.5, 0.5)), transforms.Normalize((-1.0, -1.0, -1.0),(2.0, 2.0, 2.0))]
     trans = transforms.Compose(trans)
     tenFirst = trans(tenFirst)
     tenSecond = trans(tenSecond)
@@ -425,6 +436,9 @@ if __name__ == '__main__':
     liteflownet3 = LiteFlownet3().cuda().eval()
 
     tenOutput = estimate(liteflownet3, tenFirst, tenSecond)
+    viz = fz.convert_from_flow(tenOutput.permute(1,2,0).detach().numpy())
+    pil = PIL.Image.fromarray(viz)
+    pil.save('./viz.png')
 
     objOutput = open(arguments_strOut, 'wb')
 
